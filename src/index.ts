@@ -9,6 +9,12 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
+const ENDPOINTS = {
+  "/health": "Service status and current timestamp",
+  "/articles": "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit",
+  "/agent": "Runs the news pipeline now (also runs daily at 7 AM America/New_York)",
+};
+
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status, headers: CORS_HEADERS });
 }
@@ -33,6 +39,8 @@ export default {
 
     try {
       switch (pathname) {
+        case "/":
+          return json({ service: "news-app-backend", endpoints: ENDPOINTS });
         case "/health":
           return json({ status: "ok", service: "news-app-backend", timestamp: new Date().toISOString() });
         case "/agent":
@@ -40,7 +48,7 @@ export default {
         case "/articles":
           return json(await listArticles(env, searchParams));
         default:
-          return json({ error: "Not found", endpoints: ["/health", "/agent", "/articles"] }, 404);
+          return json({ error: "Not found", endpoints: ENDPOINTS }, 404);
       }
     } catch (err) {
       const status = err instanceof BadRequestError ? 400 : 500;
