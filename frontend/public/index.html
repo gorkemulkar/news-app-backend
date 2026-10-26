@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>News Intelligence</title>
+  <meta name="description" content="Daily edge AI and on-device audio news, selected and summarized by Claude.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><path d='M9 22V10l14 12V10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <div>
+        <h1>News Intelligence</h1>
+        <p class="tagline">On-device audio ML, edge AI hardware and deployment tooling, selected and summarized daily.</p>
+      </div>
+      <div class="refresh">
+        <button id="refresh" type="button" class="btn-primary">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="btn-label">Refresh</span>
+        </button>
+        <p id="last-refreshed" class="muted" aria-live="polite">Loading…</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <form id="filters" class="filters" aria-label="Filter articles">
+      <label>Topic
+        <select id="topic" name="topic">
+          <option value="">All topics</option>
+        </select>
+      </label>
+      <label>Minimum relevance
+        <select id="min-score" name="min_score">
+          <option value="">Any</option>
+          <option value="5">5+</option>
+          <option value="6">6+</option>
+          <option value="7">7+</option>
+          <option value="8">8+</option>
+          <option value="9">9+</option>
+        </select>
+      </label>
+      <label>Show
+        <select id="limit" name="limit">
+          <option value="10">10 articles</option>
+          <option value="20">20 articles</option>
+          <option value="50" selected>50 articles</option>
+          <option value="100">100 articles</option>
+        </select>
+      </label>
+      <p id="result-count" class="muted result-count" aria-live="polite"></p>
+    </form>
+
+    <div id="status" class="status" role="status" hidden></div>
+    <div id="groups" aria-busy="true"></div>
+  </main>
+
+  <footer class="wrap site-footer muted">
+    Articles found with You.com search and ranked by Claude. Runs automatically every day at 7 AM Eastern.
+  </footer>
+
+  <template id="card-template">
+    <article class="card">
+      <div class="card-head">
+        <h3 class="headline"><a target="_blank" rel="noopener noreferrer"></a></h3>
+        <span class="score"></span>
+      </div>
+      <p class="meta"><span class="source"></span><span class="dot" aria-hidden="true">·</span><time class="date"></time></p>
+      <p class="summary"></p>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

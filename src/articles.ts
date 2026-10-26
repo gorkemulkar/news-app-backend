@@ -45,5 +45,16 @@ export async function listArticles(env: Env, params: URLSearchParams) {
     LIMIT ?${binds.length}`;
 
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
-  return { count: results.length, articles: results };
+  return { count: results.length, last_refreshed: await lastRefreshed(env), articles: results };
+}
+
+// Last successful pipeline run; falls back to the newest fetch for data that predates run tracking.
+async function lastRefreshed(env: Env): Promise<string | null> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(
+       (SELECT MAX(finished_at) FROM pipeline_runs WHERE error IS NULL AND finished_at IS NOT NULL),
+       (SELECT MAX(fetched_at) FROM articles)
+     ) AS at`,
+  ).first<{ at: string | null }>();
+  return row?.at ?? null;
 }

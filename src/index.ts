@@ -1,6 +1,10 @@
+import topicsConfig from "../topics.json";
 import { listArticles } from "./articles";
 import { runPipeline } from "./pipeline";
 import { BadRequestError, type Env } from "./types";
+
+// Manual runs spend real API credit, so a public Refresh button can start at most one run per window.
+const MANUAL_RUN_COOLDOWN_SECONDS = 300;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -11,9 +15,18 @@ const CORS_HEADERS = {
 
 const ENDPOINTS = {
   "/health": "Service status and current timestamp",
+  "/topics": "Configured news topics",
   "/articles": "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit",
-  "/agent": "Runs the news pipeline now (also runs daily at 7 AM America/New_York)",
+  "/agent": "Runs the news pipeline now (also runs daily at 7 AM America/New_York); one manual run per 5 minutes",
 };
+
+async function secondsUntilNextManualRun(env: Env): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT CAST(strftime('%s', 'now') - strftime('%s', MAX(started_at)) AS INTEGER) AS elapsed
+     FROM pipeline_runs WHERE trigger = 'manual'`,
+  ).first<{ elapsed: number | null }>();
+  return row?.elapsed == null ? 0 : Math.max(0, MANUAL_RUN_COOLDOWN_SECONDS - row.elapsed);
+}
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status, headers: CORS_HEADERS });
@@ -43,8 +56,15 @@ export default {
           return json({ service: "news-app-backend", endpoints: ENDPOINTS });
         case "/health":
           return json({ status: "ok", service: "news-app-backend", timestamp: new Date().toISOString() });
-        case "/agent":
-          return json(await runPipeline(env));
+        case "/topics":
+          return json({ topics: topicsConfig.topics.map(({ id, name, description }) => ({ id, name, description })) });
+        case "/agent": {
+          const wait = await secondsUntilNextManualRun(env);
+          if (wait > 0) {
+            return json({ error: `The agent ran recently; try again in ${wait} seconds`, retry_after_seconds: wait }, 429);
+          }
+          return json(await runPipeline(env, "manual"));
+        }
         case "/articles":
           return json(await listArticles(env, searchParams));
         default:
@@ -59,7 +79,7 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (!isScheduledLocalHour(controller.scheduledTime, env)) return;
     ctx.waitUntil(
-      runPipeline(env).then((result) => console.log("scheduled pipeline", JSON.stringify(result))),
+      runPipeline(env, "scheduled").then((result) => console.log("scheduled pipeline", JSON.stringify(result))),
     );
   },
 } satisfies ExportedHandler<Env>;

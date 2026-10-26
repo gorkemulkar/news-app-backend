@@ -40,10 +40,33 @@ const RESULTS_PER_QUERY = 10;
 const MAX_AGE_DAYS = 7;
 const YDC_SEARCH_URL = "https://ydc-index.io/v1/search";
 
-export async function runPipeline(env: Env) {
+export async function runPipeline(env: Env, trigger: "manual" | "scheduled") {
   if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY secret is not set");
   if (!env.YDC_API_KEY) throw new Error("YDC_API_KEY secret is not set");
 
+  const run = await env.DB.prepare("INSERT INTO pipeline_runs (trigger) VALUES (?1) RETURNING id")
+    .bind(trigger)
+    .first<{ id: number }>();
+  try {
+    const result = await executePipeline(env);
+    await env.DB.prepare(
+      `UPDATE pipeline_runs SET finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+         articles_inserted = ?2, articles_skipped = ?3, total_returned = ?4 WHERE id = ?1`,
+    )
+      .bind(run!.id, result.articles_inserted, result.articles_skipped, result.total_returned_by_claude)
+      .run();
+    return result;
+  } catch (err) {
+    await env.DB.prepare(
+      `UPDATE pipeline_runs SET finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), error = ?2 WHERE id = ?1`,
+    )
+      .bind(run!.id, err instanceof Error ? err.message : String(err))
+      .run();
+    throw err;
+  }
+}
+
+async function executePipeline(env: Env) {
   const started = Date.now();
   const client = new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY,
@@ -168,6 +191,7 @@ async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
       const date = item.page_age?.slice(0, 10);
       const published_at = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
       if (published_at && published_at < cutoff) continue;
+      if (urlPredatesCutoff(item.url, cutoff)) continue;
       byUrl.set(item.url, {
         id: byUrl.size + 1,
         url: item.url,
@@ -180,6 +204,14 @@ async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
     }
   }
   return [...byUrl.values()];
+}
+
+// page_age reflects the last crawl, so a re-crawled old article can look new; a dated URL path
+// such as /2023/12/ is the more reliable signal. Compared at month granularity.
+function urlPredatesCutoff(url: string, cutoff: string): boolean {
+  const m = new URL(url).pathname.match(/\/(20\d{2})[/-](0?[1-9]|1[0-2])(?=[/-])/);
+  if (!m) return false;
+  return `${m[1]}-${m[2].padStart(2, "0")}` < cutoff.slice(0, 7);
 }
 
 async function knownUrls(env: Env, urls: string[]): Promise<Set<string>> {
@@ -212,7 +244,7 @@ async function selectArticles(
 Topic: ${topic.name}
 Scope: ${topic.description}
 
-Skip items that are off-topic, generic explainers, listicles, SEO pages, job posts or duplicates of the same story (keep the most authoritative source). Prefer primary sources such as papers, vendor announcements and established trade press.
+Skip items that are off-topic, generic explainers, listicles, SEO pages, job posts or duplicates of the same story (keep the most authoritative source). The "published" field is when the page was last crawled, so also skip anything whose title, snippets or URL show it first came out before the past ${MAX_AGE_DAYS} days. Prefer primary sources such as papers, vendor announcements and established trade press.
 
 Search results:
 ${JSON.stringify(listing, null, 1)}
