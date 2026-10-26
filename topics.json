@@ -1,0 +1,32 @@
+{
+  "topics": [
+    {
+      "id": "audio-research",
+      "name": "On-device audio ML: research",
+      "description": "New architectures and papers for audio ML that can run on-device: speech enhancement, keyword spotting and VAD, speaker identification, sound event detection, spatial audio and direction-of-arrival, audio tokenizers and audio foundation models.",
+      "keywords": ["speech enhancement", "keyword spotting", "voice activity detection", "speaker identification", "sound event detection", "SELD", "direction of arrival", "spatial audio", "audio tokenizer", "audio foundation model", "low-latency audio", "streaming audio model"],
+      "sources": ["arXiv eess.AS", "arXiv cs.SD", "ICASSP", "Interspeech", "DCASE", "WASPAA"]
+    },
+    {
+      "id": "audio-applications",
+      "name": "On-device audio ML: edge applications",
+      "description": "Shipping products and announcements that put audio AI on the device: earbuds, hearables, hearing aids, smart speakers, in-car audio and wearables, including features like adaptive ANC, conversation boost and on-device voice assistants.",
+      "keywords": ["earbuds", "hearables", "hearing aid", "adaptive ANC", "conversation boost", "on-device voice assistant", "in-car audio", "in-cabin voice", "smart speaker", "wearable audio"],
+      "sources": ["product launch news", "vendor press releases", "consumer audio trade press"]
+    },
+    {
+      "id": "edge-hardware",
+      "name": "Edge AI hardware & NPUs",
+      "description": "Launches, benchmarks and SDK releases for microcontroller and edge NPUs and SoCs.",
+      "keywords": ["NPU", "Ethos-U", "Cortex-M", "Alif", "NXP", "STMicroelectronics", "Infineon", "Texas Instruments", "Synaptics", "Syntiant", "Qualcomm", "Jetson", "MLPerf Tiny", "edge AI SoC"],
+      "sources": ["vendor newsrooms", "semiconductor trade press", "MLCommons"]
+    },
+    {
+      "id": "edge-toolchain",
+      "name": "Edge model compression & deployment toolchain",
+      "description": "Quantization, pruning, distillation and small on-device language and audio models, plus the compilers and runtimes that deploy them to edge hardware.",
+      "keywords": ["quantization", "INT8", "INT4", "quantization-aware training", "pruning", "knowledge distillation", "small language model", "on-device LLM", "ExecuTorch", "LiteRT", "TFLite Micro", "Vela", "TVM", "ONNX Runtime"],
+      "sources": ["arXiv cs.LG", "runtime and compiler release notes", "vendor developer blogs"]
+    }
+  ]
+}
