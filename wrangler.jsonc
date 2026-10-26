@@ -5,11 +5,12 @@
   "compatibility_date": "2026-10-20",
   "observability": { "enabled": true },
   "vars": {
-    "ANTHROPIC_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_BASE_URL": "https://api.portkey.ai",
+    "ANTHROPIC_MODEL": "@bedrock-global/us.anthropic.claude-opus-5-5",
     "SCHEDULE_TIMEZONE": "America/New_York",
     "SCHEDULE_HOUR": "7"
   },
-  // ANTHROPIC_API_KEY is a Worker secret: `wrangler secret put ANTHROPIC_API_KEY`
+  // Secrets (never in code): `wrangler secret put ANTHROPIC_API_KEY` (Portkey key) and `wrangler secret put YDC_API_KEY` (You.com)
   // 7 AM New York is 11:00 UTC in summer and 12:00 UTC in winter; the handler runs only the matching one.
   "triggers": { "crons": ["0 11 * * *", "0 12 * * *"] },
   "d1_databases": [

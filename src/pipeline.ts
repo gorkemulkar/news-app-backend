@@ -4,6 +4,16 @@ import type { Env } from "./types";
 
 type Topic = (typeof topicsConfig.topics)[number];
 
+interface Candidate {
+  id: number;
+  url: string;
+  title: string;
+  domain: string;
+  published_at: string | null;
+  description: string;
+  snippets: string[];
+}
+
 interface Article {
   headline: string;
   source: string | null;
@@ -15,6 +25,8 @@ interface Article {
 
 interface TopicResult {
   topic: string;
+  candidates: number;
+  known_excluded: number;
   returned: number;
   inserted: number;
   skipped: number;
@@ -24,13 +36,23 @@ interface TopicResult {
 
 const ARTICLES_PER_TOPIC = 5;
 const MAX_ARTICLES_PER_TOPIC = 20;
-const MAX_PAUSE_CONTINUATIONS = 4;
+const RESULTS_PER_QUERY = 10;
+const MAX_AGE_DAYS = 7;
+const YDC_SEARCH_URL = "https://ydc-index.io/v1/search";
 
 export async function runPipeline(env: Env) {
   if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY secret is not set");
+  if (!env.YDC_API_KEY) throw new Error("YDC_API_KEY secret is not set");
 
   const started = Date.now();
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({
+    apiKey: env.ANTHROPIC_API_KEY,
+    baseURL: env.ANTHROPIC_BASE_URL || undefined,
+    // Portkey authenticates with its own header; the gateway ignores x-api-key.
+    defaultHeaders: env.ANTHROPIC_BASE_URL?.includes("portkey")
+      ? { "x-portkey-api-key": env.ANTHROPIC_API_KEY }
+      : undefined,
+  });
 
   const settled = await Promise.allSettled(
     topicsConfig.topics.map((topic) => processTopic(client, env, topic)),
@@ -40,6 +62,8 @@ export async function runPipeline(env: Env) {
       ? s.value
       : {
           topic: topicsConfig.topics[i].id,
+          candidates: 0,
+          known_excluded: 0,
           returned: 0,
           inserted: 0,
           skipped: 0,
@@ -62,7 +86,13 @@ export async function runPipeline(env: Env) {
 }
 
 async function processTopic(client: Anthropic, env: Env, topic: Topic): Promise<TopicResult> {
-  const articles = await findArticles(client, env.ANTHROPIC_MODEL, topic);
+  const found = await searchTopic(env, topic);
+
+  // Drop URLs already stored so Claude picks from new stories instead of re-selecting old ones.
+  const known = await knownUrls(env, found.map((c) => c.url));
+  const candidates = found.filter((c) => !known.has(c.url));
+
+  const articles = candidates.length > 0 ? await selectArticles(client, env.ANTHROPIC_MODEL, topic, candidates) : [];
 
   let inserted = 0;
   if (articles.length > 0) {
@@ -93,6 +123,8 @@ async function processTopic(client: Anthropic, env: Env, topic: Topic): Promise<
 
   return {
     topic: topic.id,
+    candidates: candidates.length,
+    known_excluded: found.length - candidates.length,
     returned: articles.length,
     inserted,
     skipped: articles.length - inserted,
@@ -100,52 +132,112 @@ async function processTopic(client: Anthropic, env: Env, topic: Topic): Promise<
   };
 }
 
-async function findArticles(client: Anthropic, model: string, topic: Topic): Promise<Article[]> {
+interface YdcResult {
+  url?: string;
+  title?: string;
+  description?: string;
+  snippets?: string[];
+  page_age?: string;
+}
+
+async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
+  const responses = await Promise.allSettled(
+    topic.queries.map(async (query) => {
+      const res = await fetch(YDC_SEARCH_URL, {
+        method: "POST",
+        headers: { "X-API-Key": env.YDC_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ query, count: RESULTS_PER_QUERY, freshness: "week", country: "US" }),
+      });
+      if (!res.ok) throw new Error(`You.com search ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const body = (await res.json()) as { results?: { web?: YdcResult[]; news?: YdcResult[] } };
+      return [...(body.results?.news ?? []), ...(body.results?.web ?? [])];
+    }),
+  );
+
+  const failures = responses.filter((r) => r.status === "rejected");
+  if (failures.length === responses.length) {
+    throw new Error(`All searches failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
+
+  const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const byUrl = new Map<string, Candidate>();
+  for (const r of responses) {
+    if (r.status !== "fulfilled") continue;
+    for (const item of r.value) {
+      if (!item.url || !item.title || !/^https?:\/\//i.test(item.url) || byUrl.has(item.url)) continue;
+      const date = item.page_age?.slice(0, 10);
+      const published_at = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+      if (published_at && published_at < cutoff) continue;
+      byUrl.set(item.url, {
+        id: byUrl.size + 1,
+        url: item.url,
+        title: item.title,
+        domain: new URL(item.url).hostname.replace(/^www\./, ""),
+        published_at,
+        description: item.description ?? "",
+        snippets: (item.snippets ?? []).slice(0, 3),
+      });
+    }
+  }
+  return [...byUrl.values()];
+}
+
+async function knownUrls(env: Env, urls: string[]): Promise<Set<string>> {
+  if (urls.length === 0) return new Set();
+  const placeholders = urls.map((_, i) => `?${i + 1}`).join(", ");
+  const { results } = await env.DB.prepare(`SELECT url FROM articles WHERE url IN (${placeholders})`)
+    .bind(...urls)
+    .all<{ url: string }>();
+  return new Set(results.map((r) => r.url));
+}
+
+async function selectArticles(
+  client: Anthropic,
+  model: string,
+  topic: Topic,
+  candidates: Candidate[],
+): Promise<Article[]> {
   const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today is ${today}. Use web search to find the ${ARTICLES_PER_TOPIC} most recent and significant news articles or papers published in the past 7 days on this topic.
+  const listing = candidates.map(({ id, title, domain, published_at, description, snippets }) => ({
+    id,
+    title,
+    domain,
+    published: published_at ?? "unknown",
+    description,
+    snippets,
+  }));
+
+  const prompt = `Today is ${today}. Below are web search results from the past ${MAX_AGE_DAYS} days for a news topic. Pick the ${ARTICLES_PER_TOPIC} most recent and significant items for someone building on-device AI products.
 
 Topic: ${topic.name}
 Scope: ${topic.description}
-Useful keywords: ${topic.keywords.join(", ")}
-Typical sources: ${topic.sources.join(", ")}
 
-Only include items published in the past 7 days, each with a direct URL to the article or paper itself (not a search, tag or listing page). Rank by significance to someone building on-device AI products.
+Skip items that are off-topic, generic explainers, listicles, SEO pages, job posts or duplicates of the same story (keep the most authoritative source). Prefer primary sources such as papers, vendor announcements and established trade press.
+
+Search results:
+${JSON.stringify(listing, null, 1)}
 
 Reply with only a JSON array and no other text. Each element:
-{"headline": string, "source": string (publication or site name), "published_date": "YYYY-MM-DD", "url": string, "summary": string (2-3 sentences), "relevance_score": integer from 1 to 10}
+{"id": number (from the results), "headline": string (clear, factual), "source": string (publication or organization name), "summary": string (2-3 sentences, using only facts in the result), "relevance_score": integer 1-10}
 If fewer than ${ARTICLES_PER_TOPIC} items qualify, return fewer; if none, return [].`;
 
-  const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: prompt }];
-  // The web search tool splits the answer across many content blocks (and possibly across
-  // pause_turn continuations), so collect every text block before extracting the JSON.
-  let text = "";
+  const response = await client.messages.create({
+    model,
+    max_tokens: 16000,
+    output_config: { effort: "medium" },
+    messages: [{ role: "user", content: prompt }],
+  });
 
-  for (let attempt = 0; attempt <= MAX_PAUSE_CONTINUATIONS; attempt++) {
-    const response = await client.beta.messages.create({
-      model,
-      max_tokens: 16000,
-      output_config: { effort: "medium" },
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }],
-      messages,
-    });
-
-    for (const block of response.content) {
-      if (block.type === "text") text += block.text;
-    }
-
-    if (response.stop_reason === "refusal") {
-      throw new Error(`Claude declined the request (${response.stop_details?.category ?? "no category"})`);
-    }
-    if (response.stop_reason !== "pause_turn") break;
-    messages.push({ role: "assistant", content: response.content });
+  if (response.stop_reason === "refusal") {
+    throw new Error(`Claude declined the request (${response.stop_details?.category ?? "no category"})`);
   }
 
-  return parseArticles(text);
+  // Concatenate every text block before extracting the JSON array.
+  const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  return parseSelection(text, candidates);
 }
 
-function parseArticles(text: string): Article[] {
+function parseSelection(text: string, candidates: Candidate[]): Article[] {
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
   if (start === -1 || end <= start) {
@@ -160,24 +252,25 @@ function parseArticles(text: string): Article[] {
   }
   if (!Array.isArray(raw)) return [];
 
-  const seen = new Set<string>();
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+  const used = new Set<number>();
   const articles: Article[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
-    const url = typeof r.url === "string" ? r.url.trim() : "";
-    const headline = typeof r.headline === "string" ? r.headline.trim() : "";
-    if (!/^https?:\/\//i.test(url) || !headline || seen.has(url)) continue;
-    seen.add(url);
+    // URLs and dates come from the search result, never from the model.
+    const candidate = byId.get(Number(r.id));
+    if (!candidate || used.has(candidate.id)) continue;
+    used.add(candidate.id);
 
-    const date = typeof r.published_date === "string" ? r.published_date.slice(0, 10) : "";
     const score = Math.round(Number(r.relevance_score));
+    const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     articles.push({
-      headline,
-      source: typeof r.source === "string" && r.source.trim() ? r.source.trim() : null,
-      published_at: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
-      url,
-      summary: typeof r.summary === "string" && r.summary.trim() ? r.summary.trim() : null,
+      headline: text(r.headline) ?? candidate.title,
+      source: text(r.source) ?? candidate.domain,
+      published_at: candidate.published_at,
+      url: candidate.url,
+      summary: text(r.summary),
       relevance_score: Number.isFinite(score) ? Math.min(10, Math.max(1, score)) : null,
     });
   }
