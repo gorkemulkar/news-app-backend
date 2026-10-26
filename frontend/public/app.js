@@ -16,6 +16,8 @@ const el = {
 };
 
 let topics = [];
+// Filter changes can overlap; only the latest request may render, so a slow older response can't overwrite it.
+let latestLoad = 0;
 
 async function api(path, options) {
   const res = await fetch(API_BASE + path, options);
@@ -140,13 +142,15 @@ async function loadArticles() {
   if (el.minScore.value) params.set("min_score", el.minScore.value);
   params.set("limit", el.limit.value);
 
+  const load = ++latestLoad;
   el.groups.setAttribute("aria-busy", "true");
   try {
-    render(await api(`/articles?${params}`));
+    const data = await api(`/articles?${params}`);
+    if (load === latestLoad) render(data);
   } catch (err) {
-    showStatus(`Could not load articles: ${err.message}`, "error");
+    if (load === latestLoad) showStatus(`Could not load articles: ${err.message}`, "error");
   } finally {
-    el.groups.setAttribute("aria-busy", "false");
+    if (load === latestLoad) el.groups.setAttribute("aria-busy", "false");
   }
 }
 

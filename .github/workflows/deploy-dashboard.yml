@@ -1,0 +1,36 @@
+# Redeploys the dashboard (frontend/) to Cloudflare Pages on every push that changes it.
+# Pushes to main update https://news-app-dashboard.pages.dev; other branches and PRs get preview URLs.
+# Requires the repository secret CLOUDFLARE_API_TOKEN (a token with Cloudflare Pages: Edit).
+name: Deploy dashboard
+
+on:
+  push:
+    branches: [main]
+    paths: ["frontend/**", ".github/workflows/deploy-dashboard.yml"]
+  pull_request:
+    paths: ["frontend/**", ".github/workflows/deploy-dashboard.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dashboard-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # Fork PRs get no secrets and must not inject their branch name into the deploy command.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 1a01f1adfa04f87f29b4b8185e05a50e
+          wranglerVersion: "4.153.0"
+          workingDirectory: frontend
+          command: pages deploy --branch=${{ github.head_ref || github.ref_name }} --commit-hash=${{ github.sha }}
