@@ -1,6 +1,6 @@
 import topicsConfig from "../topics.json";
 import { listArticles } from "./articles";
-import { runPipeline } from "./pipeline";
+import { runPipeline, SCORE_RUBRIC } from "./pipeline";
 import { BadRequestError, type Env } from "./types";
 
 // Manual runs spend real API credit, so a public Refresh button can start at most one run per window.
@@ -15,8 +15,9 @@ const CORS_HEADERS = {
 
 const ENDPOINTS = {
   "/health": "Service status and current timestamp",
-  "/topics": "Configured news topics",
-  "/articles": "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit",
+  "/topics": "Configured news topics and the relevance-score rubric",
+  "/articles":
+    "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit; sort: published (default), added, score",
   "/agent": "Runs the news pipeline now (also runs daily at 7 AM America/New_York); one manual run per 5 minutes",
 };
 
@@ -57,7 +58,10 @@ export default {
         case "/health":
           return json({ status: "ok", service: "news-app-backend", timestamp: new Date().toISOString() });
         case "/topics":
-          return json({ topics: topicsConfig.topics.map(({ id, name, description }) => ({ id, name, description })) });
+          return json({
+            topics: topicsConfig.topics.map(({ id, name, description }) => ({ id, name, description })),
+            score_rubric: SCORE_RUBRIC,
+          });
         case "/agent": {
           const wait = await secondsUntilNextManualRun(env);
           if (wait > 0) {

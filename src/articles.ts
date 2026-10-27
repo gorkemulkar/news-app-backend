@@ -4,7 +4,13 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// GET /articles?topic=&from=YYYY-MM-DD&to=YYYY-MM-DD&source=&min_score=&limit=
+const ORDER_BY = {
+  published: "published_at IS NULL, published_at DESC, relevance_score DESC, id DESC",
+  added: "fetched_at DESC, relevance_score DESC, id DESC",
+  score: "relevance_score IS NULL, relevance_score DESC, published_at DESC, id DESC",
+} as const;
+
+// GET /articles?topic=&from=YYYY-MM-DD&to=YYYY-MM-DD&source=&min_score=&limit=&sort=published|added|score
 export async function listArticles(env: Env, params: URLSearchParams) {
   const where: string[] = [];
   const binds: (string | number)[] = [];
@@ -38,23 +44,29 @@ export async function listArticles(env: Env, params: URLSearchParams) {
   if (!Number.isInteger(limit) || limit < 1) throw new BadRequestError("limit must be a positive integer");
   binds.push(Math.min(limit, MAX_LIMIT));
 
-  const sql = `SELECT id, topic, headline, source, published_at, url, summary, relevance_score, fetched_at
+  const sort = params.get("sort") ?? "published";
+  if (!(sort in ORDER_BY)) throw new BadRequestError(`sort must be one of: ${Object.keys(ORDER_BY).join(", ")}`);
+
+  const sql = `SELECT id, topic, headline, source, published_at, url, summary, relevance_score, score_reason, fetched_at
     FROM articles
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY published_at IS NULL, published_at DESC, relevance_score DESC, id DESC
+    ORDER BY ${ORDER_BY[sort as keyof typeof ORDER_BY]}
     LIMIT ?${binds.length}`;
 
-  const { results } = await env.DB.prepare(sql).bind(...binds).all();
-  return { count: results.length, last_refreshed: await lastRefreshed(env), articles: results };
+  const [{ results }, runs] = await Promise.all([env.DB.prepare(sql).bind(...binds).all(), runTimes(env)]);
+  return { count: results.length, ...runs, articles: results };
 }
 
-// Last successful pipeline run; falls back to the newest fetch for data that predates run tracking.
-async function lastRefreshed(env: Env): Promise<string | null> {
+// last_refreshed: last successful run (falls back to the newest fetch for data that predates run tracking).
+// latest_additions_at: start of the most recent run that added articles; anything fetched since is "new".
+async function runTimes(env: Env): Promise<{ last_refreshed: string | null; latest_additions_at: string | null }> {
   const row = await env.DB.prepare(
-    `SELECT COALESCE(
-       (SELECT MAX(finished_at) FROM pipeline_runs WHERE error IS NULL AND finished_at IS NOT NULL),
-       (SELECT MAX(fetched_at) FROM articles)
-     ) AS at`,
-  ).first<{ at: string | null }>();
-  return row?.at ?? null;
+    `SELECT
+       COALESCE(
+         (SELECT MAX(finished_at) FROM pipeline_runs WHERE error IS NULL AND finished_at IS NOT NULL),
+         (SELECT MAX(fetched_at) FROM articles)
+       ) AS last_refreshed,
+       (SELECT MAX(started_at) FROM pipeline_runs WHERE articles_inserted > 0) AS latest_additions_at`,
+  ).first<{ last_refreshed: string | null; latest_additions_at: string | null }>();
+  return { last_refreshed: row?.last_refreshed ?? null, latest_additions_at: row?.latest_additions_at ?? null };
 }

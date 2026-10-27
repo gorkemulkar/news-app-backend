@@ -50,15 +50,29 @@
           <option value="100">100 articles</option>
         </select>
       </label>
+      <label>Sort by
+        <select id="sort" name="sort">
+          <option value="added" selected>Recently added</option>
+          <option value="published">Publication date</option>
+          <option value="score">Relevance score</option>
+        </select>
+      </label>
       <p id="result-count" class="muted result-count" aria-live="polite"></p>
     </form>
+
+    <details class="legend">
+      <summary>How relevance scores work</summary>
+      <p>Claude scores each article 1–10 for how useful it is to someone building on-device AI products, using this rubric. Hover a score, or read the “Why” line on a card, for the reason behind it.</p>
+      <ul id="rubric-list"></ul>
+      <p><span class="new-badge">New</span> marks articles added by the most recent refresh.</p>
+    </details>
 
     <div id="status" class="status" role="status" hidden></div>
     <div id="groups" aria-busy="true"></div>
   </main>
 
   <footer class="wrap site-footer muted">
-    Articles found with You.com search and ranked by Claude. Runs automatically every day at 7 AM Eastern.
+    Articles found with You.com search and arXiv, then ranked by Claude. Runs automatically every day at 7 AM Eastern.
   </footer>
 
   <template id="card-template">
@@ -67,8 +81,9 @@
         <h3 class="headline"><a target="_blank" rel="noopener noreferrer"></a></h3>
         <span class="score"></span>
       </div>
-      <p class="meta"><span class="source"></span><span class="dot" aria-hidden="true">·</span><time class="date"></time></p>
+      <p class="meta"><span class="new-badge" hidden>New</span><span class="source"></span><span class="dot" aria-hidden="true">·</span><time class="date"></time><span class="dot" aria-hidden="true">·</span><span class="added"></span></p>
       <p class="summary"></p>
+      <p class="reason"><strong></strong></p>
     </article>
   </template>
 

@@ -21,6 +21,7 @@ interface Article {
   url: string;
   summary: string | null;
   relevance_score: number | null;
+  score_reason: string | null;
 }
 
 interface TopicResult {
@@ -39,6 +40,17 @@ const MAX_ARTICLES_PER_TOPIC = 20;
 const RESULTS_PER_QUERY = 10;
 const MAX_AGE_DAYS = 7;
 const YDC_SEARCH_URL = "https://ydc-index.io/v1/search";
+const ARXIV_API_URL = "https://export.arxiv.org/api/query";
+const ARXIV_MAX_RESULTS = 150;
+const ARXIV_ABSTRACT_CHARS = 500;
+
+// Shown to Claude and mirrored in the dashboard's "How scores work" panel.
+export const SCORE_RUBRIC = `9-10: Major and directly actionable for on-device AI work: a new NPU, MCU or edge SoC launch; a major runtime or compiler release; a paper that sets a clear new state of the art for an on-device audio task. Primary source.
+7-8: Clearly relevant and substantive: a notable product or feature launch, a solid paper with efficiency or real-time results, an important SDK or toolchain update.
+5-6: Relevant but incremental: a minor update, early-stage or narrow research, secondary coverage of known news.
+3-4: Tangential: general AI news with a weak on-device angle, or cloud-only work.
+1-2: Barely related to the topic.
+For research, weigh efficiency (model size, latency, power, streaming) and reproducibility (code, benchmarks) above novelty alone.`;
 
 export async function runPipeline(env: Env, trigger: "manual" | "scheduled") {
   if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY secret is not set");
@@ -51,9 +63,15 @@ export async function runPipeline(env: Env, trigger: "manual" | "scheduled") {
     const result = await executePipeline(env);
     await env.DB.prepare(
       `UPDATE pipeline_runs SET finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-         articles_inserted = ?2, articles_skipped = ?3, total_returned = ?4 WHERE id = ?1`,
+         articles_inserted = ?2, articles_skipped = ?3, total_returned = ?4, details = ?5 WHERE id = ?1`,
     )
-      .bind(run!.id, result.articles_inserted, result.articles_skipped, result.total_returned_by_claude)
+      .bind(
+        run!.id,
+        result.articles_inserted,
+        result.articles_skipped,
+        result.total_returned_by_claude,
+        JSON.stringify(result.topics),
+      )
       .run();
     return result;
   } catch (err) {
@@ -120,13 +138,22 @@ async function processTopic(client: Anthropic, env: Env, topic: Topic): Promise<
   let inserted = 0;
   if (articles.length > 0) {
     const insert = env.DB.prepare(
-      `INSERT INTO articles (topic, headline, source, published_at, url, summary, relevance_score)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      `INSERT INTO articles (topic, headline, source, published_at, url, summary, relevance_score, score_reason)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(url) DO NOTHING`,
     );
     const results = await env.DB.batch(
       articles.map((a) =>
-        insert.bind(topic.id, a.headline, a.source, a.published_at, a.url, a.summary, a.relevance_score),
+        insert.bind(
+          topic.id,
+          a.headline,
+          a.source,
+          a.published_at,
+          a.url,
+          a.summary,
+          a.relevance_score,
+          a.score_reason,
+        ),
       ),
     );
     inserted = results.filter((r) => r.meta.changes > 0).length;
@@ -164,39 +191,41 @@ interface YdcResult {
 }
 
 async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
-  const responses = await Promise.allSettled(
-    topic.queries.map(async (query) => {
-      const res = await fetch(YDC_SEARCH_URL, {
-        method: "POST",
-        headers: { "X-API-Key": env.YDC_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ query, count: RESULTS_PER_QUERY, freshness: "week", country: "US" }),
-      });
-      if (!res.ok) throw new Error(`You.com search ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      const body = (await res.json()) as { results?: { web?: YdcResult[]; news?: YdcResult[] } };
-      return [...(body.results?.news ?? []), ...(body.results?.web ?? [])];
-    }),
-  );
+  const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const searches: Promise<YdcResult[]>[] = topic.queries.map(async (query) => {
+    const res = await fetch(YDC_SEARCH_URL, {
+      method: "POST",
+      headers: { "X-API-Key": env.YDC_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ query, count: RESULTS_PER_QUERY, freshness: "week", country: "US" }),
+    });
+    if (!res.ok) throw new Error(`You.com search ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const body = (await res.json()) as { results?: { web?: YdcResult[]; news?: YdcResult[] } };
+    return [...(body.results?.news ?? []), ...(body.results?.web ?? [])];
+  });
+  if (topic.arxiv_query) searches.push(searchArxiv(topic.arxiv_query));
+  const responses = await Promise.allSettled(searches);
 
   const failures = responses.filter((r) => r.status === "rejected");
   if (failures.length === responses.length) {
     throw new Error(`All searches failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 
-  const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 86_400_000).toISOString().slice(0, 10);
   const byUrl = new Map<string, Candidate>();
   for (const r of responses) {
     if (r.status !== "fulfilled") continue;
     for (const item of r.value) {
-      if (!item.url || !item.title || !/^https?:\/\//i.test(item.url) || byUrl.has(item.url)) continue;
+      if (!item.url || !item.title || !/^https?:\/\//i.test(item.url)) continue;
+      const url = normalizeUrl(item.url);
+      if (byUrl.has(url)) continue;
       const date = item.page_age?.slice(0, 10);
       const published_at = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
       if (published_at && published_at < cutoff) continue;
-      if (urlPredatesCutoff(item.url, cutoff)) continue;
-      byUrl.set(item.url, {
+      if (urlPredatesCutoff(url, cutoff)) continue;
+      byUrl.set(url, {
         id: byUrl.size + 1,
-        url: item.url,
+        url,
         title: item.title,
-        domain: new URL(item.url).hostname.replace(/^www\./, ""),
+        domain: new URL(url).hostname.replace(/^www\./, ""),
         published_at,
         description: item.description ?? "",
         snippets: (item.snippets ?? []).slice(0, 3),
@@ -204,6 +233,54 @@ async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
     }
   }
   return [...byUrl.values()];
+}
+
+// Newest arXiv submissions matching the query (arXiv search syntax), shaped like search results.
+// Web search rarely surfaces new papers, so research topics read arXiv directly.
+async function searchArxiv(query: string): Promise<YdcResult[]> {
+  const params = new URLSearchParams({
+    search_query: query,
+    sortBy: "submittedDate",
+    sortOrder: "descending",
+    max_results: String(ARXIV_MAX_RESULTS),
+  });
+  const res = await fetch(`${ARXIV_API_URL}?${params}`, {
+    headers: { "User-Agent": "news-app-backend (https://github.com/gorkemulkar/news-app-backend)" },
+  });
+  if (!res.ok) throw new Error(`arXiv ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const xml = await res.text();
+
+  const field = (entry: string, tag: string) =>
+    decodeXml(entry.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`))?.[1] ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map(([, entry]) => {
+    const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)].map((m) => decodeXml(m[1]).trim());
+    const abstract = field(entry, "summary");
+    return {
+      url: field(entry, "id"),
+      title: field(entry, "title"),
+      description: abstract.length > ARXIV_ABSTRACT_CHARS ? `${abstract.slice(0, ARXIV_ABSTRACT_CHARS)}…` : abstract,
+      snippets: authors.length ? [`Authors: ${authors.slice(0, 4).join(", ")}${authors.length > 4 ? " et al." : ""}`] : [],
+      page_age: field(entry, "published"),
+    };
+  });
+}
+
+function decodeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+// One canonical URL per paper: arXiv versions (v1, v2), /pdf/ links and http all map to https /abs/<id>.
+function normalizeUrl(url: string): string {
+  const arxiv = url.match(/^https?:\/\/(?:www\.)?arxiv\.org\/(?:abs|pdf)\/([^?#]+?)(?:v\d+)?(?:\.pdf)?(?:[?#].*)?$/i);
+  return arxiv ? `https://arxiv.org/abs/${arxiv[1]}` : url;
 }
 
 // page_age reflects the last crawl, so a re-crawled old article can look new; a dated URL path
@@ -216,9 +293,11 @@ function urlPredatesCutoff(url: string, cutoff: string): boolean {
 
 async function knownUrls(env: Env, urls: string[]): Promise<Set<string>> {
   if (urls.length === 0) return new Set();
-  const placeholders = urls.map((_, i) => `?${i + 1}`).join(", ");
-  const { results } = await env.DB.prepare(`SELECT url FROM articles WHERE url IN (${placeholders})`)
-    .bind(...urls)
+  // One JSON parameter instead of one per URL: D1 caps a statement at 100 bound parameters.
+  const { results } = await env.DB.prepare(
+    "SELECT url FROM articles WHERE url IN (SELECT value FROM json_each(?1))",
+  )
+    .bind(JSON.stringify(urls))
     .all<{ url: string }>();
   return new Set(results.map((r) => r.url));
 }
@@ -239,18 +318,21 @@ async function selectArticles(
     snippets,
   }));
 
-  const prompt = `Today is ${today}. Below are web search results from the past ${MAX_AGE_DAYS} days for a news topic. Pick the ${ARTICLES_PER_TOPIC} most recent and significant items for someone building on-device AI products.
+  const prompt = `Today is ${today}. Below are web search results and arXiv papers from the past ${MAX_AGE_DAYS} days for a news topic. Pick the ${ARTICLES_PER_TOPIC} most recent and significant items for someone building on-device AI products.
 
 Topic: ${topic.name}
 Scope: ${topic.description}
 
 Skip items that are off-topic, generic explainers, listicles, SEO pages, job posts or duplicates of the same story (keep the most authoritative source). The "published" field is when the page was last crawled, so also skip anything whose title, snippets or URL show it first came out before the past ${MAX_AGE_DAYS} days. Prefer primary sources such as papers, vendor announcements and established trade press.
 
+Score each pick with this relevance rubric:
+${SCORE_RUBRIC}
+
 Search results:
 ${JSON.stringify(listing, null, 1)}
 
 Reply with only a JSON array and no other text. Each element:
-{"id": number (from the results), "headline": string (clear, factual), "source": string (publication or organization name), "summary": string (2-3 sentences, using only facts in the result), "relevance_score": integer 1-10}
+{"id": number (from the results), "headline": string (clear, factual), "source": string (publication or organization name; "arXiv" for arXiv papers), "summary": string (2-3 sentences, using only facts in the result), "relevance_score": integer 1-10, "score_reason": string (one short sentence on why it earned that score under the rubric)}
 If fewer than ${ARTICLES_PER_TOPIC} items qualify, return fewer; if none, return [].`;
 
   const response = await client.messages.create({
@@ -304,6 +386,7 @@ function parseSelection(text: string, candidates: Candidate[]): Article[] {
       url: candidate.url,
       summary: text(r.summary),
       relevance_score: Number.isFinite(score) ? Math.min(10, Math.max(1, score)) : null,
+      score_reason: text(r.score_reason),
     });
   }
   return articles.slice(0, ARTICLES_PER_TOPIC);

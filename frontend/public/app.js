@@ -5,7 +5,9 @@ const el = {
   topic: document.getElementById("topic"),
   minScore: document.getElementById("min-score"),
   limit: document.getElementById("limit"),
+  sort: document.getElementById("sort"),
   filters: document.getElementById("filters"),
+  rubricList: document.getElementById("rubric-list"),
   groups: document.getElementById("groups"),
   status: document.getElementById("status"),
   resultCount: document.getElementById("result-count"),
@@ -45,20 +47,22 @@ function formatDate(isoDate) {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function formatRefreshed(iso) {
-  if (!iso) return "Not refreshed yet";
-  const when = new Date(iso);
+function timeAgo(when) {
   const minutes = Math.round((Date.now() - when.getTime()) / 60000);
-  const ago =
-    minutes < 1 ? "just now" :
+  return minutes < 1 ? "just now" :
     minutes < 60 ? `${minutes} min ago` :
     minutes < 1440 ? `${Math.round(minutes / 60)} h ago` :
     `${Math.round(minutes / 1440)} d ago`;
-  const stamp = when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return `Last refreshed ${stamp} (${ago})`;
 }
 
-function renderCard(article) {
+function formatRefreshed(iso) {
+  if (!iso) return "Not refreshed yet";
+  const when = new Date(iso);
+  const stamp = when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return `Last refreshed ${stamp} (${timeAgo(when)})`;
+}
+
+function renderCard(article, isNew) {
   const card = el.cardTemplate.content.firstElementChild.cloneNode(true);
   const link = card.querySelector(".headline a");
   link.textContent = article.headline;
@@ -68,17 +72,30 @@ function renderCard(article) {
   if (article.relevance_score) {
     score.textContent = `${article.relevance_score}/10`;
     score.classList.add(scoreTier(article.relevance_score));
-    score.title = `Relevance ${article.relevance_score} out of 10`;
+    score.title = `Relevance ${article.relevance_score} out of 10` + (article.score_reason ? `: ${article.score_reason}` : "");
     score.setAttribute("aria-label", score.title);
   } else {
     score.remove();
   }
 
+  if (isNew) {
+    card.classList.add("is-new");
+    card.querySelector(".new-badge").hidden = false;
+  }
   card.querySelector(".source").textContent = article.source || "Unknown source";
   const date = card.querySelector(".date");
   date.textContent = formatDate(article.published_at);
   if (article.published_at) date.dateTime = article.published_at;
+  if (article.fetched_at) card.querySelector(".added").textContent = `Added ${timeAgo(new Date(article.fetched_at))}`;
   card.querySelector(".summary").textContent = article.summary || "";
+
+  const reason = card.querySelector(".reason");
+  if (article.score_reason && article.relevance_score) {
+    reason.querySelector("strong").textContent = `Why ${article.relevance_score}/10: `;
+    reason.append(article.score_reason);
+  } else {
+    reason.remove();
+  }
   return card;
 }
 
@@ -94,6 +111,10 @@ function render(data) {
     el.groups.append(empty);
     return;
   }
+
+  // "New" = added by the most recent run that added anything, so a Refresh's additions stand out.
+  const newSince = data.latest_additions_at;
+  const isNew = (a) => Boolean(newSince && a.fetched_at && a.fetched_at >= newSince);
 
   const byTopic = new Map();
   for (const article of data.articles) {
@@ -117,12 +138,13 @@ function render(data) {
     heading.textContent = meta ? meta.name : id;
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = `${articles.length}`;
+    const newCount = articles.filter(isNew).length;
+    count.textContent = `${articles.length}` + (newCount ? ` · ${newCount} new` : "");
     heading.append(count);
 
     const cards = document.createElement("div");
     cards.className = "cards";
-    cards.append(...articles.map(renderCard));
+    cards.append(...articles.map((a) => renderCard(a, isNew(a))));
 
     section.append(heading);
     if (meta?.description) {
@@ -141,6 +163,7 @@ async function loadArticles() {
   if (el.topic.value) params.set("topic", el.topic.value);
   if (el.minScore.value) params.set("min_score", el.minScore.value);
   params.set("limit", el.limit.value);
+  params.set("sort", el.sort.value);
 
   const load = ++latestLoad;
   el.groups.setAttribute("aria-busy", "true");
@@ -162,8 +185,11 @@ async function refresh() {
   try {
     const result = await api("/agent", { method: "POST" });
     const failed = result.topics.filter((t) => t.error);
+    const added = result.articles_inserted;
     showStatus(
-      `Refresh complete: ${result.articles_inserted} new article${result.articles_inserted === 1 ? "" : "s"} added` +
+      (added
+        ? `Refresh complete: ${added} new article${added === 1 ? "" : "s"} added, marked New below`
+        : "Refresh complete: no new articles since the last run") +
         (result.articles_skipped ? `, ${result.articles_skipped} already known` : "") +
         (failed.length ? `. ${failed.length} topic(s) failed: ${failed.map((t) => t.topic).join(", ")}` : "."),
       failed.length ? "error" : "ok",
@@ -178,14 +204,35 @@ async function refresh() {
   }
 }
 
+// The rubric comes from the API, so the panel always matches what Claude is told.
+function renderRubric(rubric) {
+  if (!rubric) return;
+  for (const line of rubric.split("\n")) {
+    const li = document.createElement("li");
+    const m = line.match(/^(\d+-\d+):\s*(.*)$/);
+    if (m) {
+      const range = document.createElement("strong");
+      range.textContent = m[1];
+      range.className = `score ${scoreTier(Number(m[1].split("-")[0]))}`;
+      li.append(range, " ", m[2]);
+    } else {
+      li.className = "rubric-note";
+      li.textContent = line;
+    }
+    el.rubricList.append(li);
+  }
+}
+
 async function init() {
   el.filters.addEventListener("change", loadArticles);
   el.filters.addEventListener("submit", (e) => e.preventDefault());
   el.refresh.addEventListener("click", refresh);
 
   try {
-    topics = (await api("/topics")).topics;
+    const config = await api("/topics");
+    topics = config.topics;
     for (const t of topics) el.topic.append(new Option(t.name, t.id));
+    renderRubric(config.score_rubric);
   } catch (err) {
     showStatus(`Could not load topics: ${err.message}`, "error");
   }

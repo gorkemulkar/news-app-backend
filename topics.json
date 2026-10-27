@@ -30,7 +30,8 @@
         "new speech enhancement or keyword spotting neural network paper",
         "on-device audio deep learning architecture research paper",
         "sound event detection or speaker verification or spatial audio model paper"
-      ]
+      ],
+      "arxiv_query": "cat:eess.AS OR cat:cs.SD"
     },
     {
       "id": "audio-applications",
