@@ -9,7 +9,7 @@ const MANUAL_RUN_COOLDOWN_SECONDS = 300;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -18,8 +18,21 @@ const ENDPOINTS = {
   "/topics": "Configured news topics and the relevance-score rubric",
   "/articles":
     "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit; sort: published (default), added, score",
-  "/agent": "Runs the news pipeline now (also runs daily at 7 AM America/New_York); one manual run per 5 minutes",
+  "/agent":
+    "Runs the news pipeline now; requires Authorization: Bearer <password>. Also runs daily at 7 AM America/New_York; one manual run per 5 minutes",
 };
+
+const encoder = new TextEncoder();
+
+// Compares SHA-256 digests in constant time, so neither the password's length nor its content leaks through timing.
+async function isAuthorized(request: Request, env: Env): Promise<boolean> {
+  const match = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i);
+  if (!match) return false;
+  const [given, expected] = await Promise.all(
+    [match[1].trim(), env.AGENT_PASSWORD].map((s) => crypto.subtle.digest("SHA-256", encoder.encode(s))),
+  );
+  return crypto.subtle.timingSafeEqual(given, expected);
+}
 
 async function secondsUntilNextManualRun(env: Env): Promise<number> {
   const row = await env.DB.prepare(
@@ -63,6 +76,14 @@ export default {
             score_rubric: SCORE_RUBRIC,
           });
         case "/agent": {
+          // Fail closed: without a configured password nobody can trigger a paid run.
+          if (!env.AGENT_PASSWORD) return json({ error: "The agent password is not configured" }, 503);
+          if (!(await isAuthorized(request, env))) {
+            return Response.json(
+              { error: "Unauthorized: send the agent password as 'Authorization: Bearer <password>'" },
+              { status: 401, headers: { ...CORS_HEADERS, "WWW-Authenticate": 'Bearer realm="news-agent"' } },
+            );
+          }
           const wait = await secondsUntilNextManualRun(env);
           if (wait > 0) {
             return json({ error: `The agent ran recently; try again in ${wait} seconds`, retry_after_seconds: wait }, 429);

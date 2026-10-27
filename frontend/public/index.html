@@ -21,6 +21,7 @@
           <span class="btn-label">Refresh</span>
         </button>
         <p id="last-refreshed" class="muted" aria-live="polite">Loading…</p>
+        <button id="forget-password" type="button" class="link-button" hidden>Forget saved password</button>
       </div>
     </div>
   </header>
@@ -74,6 +75,20 @@
   <footer class="wrap site-footer muted">
     Articles found with You.com search and arXiv, then ranked by Claude. Runs automatically every day at 7 AM Eastern.
   </footer>
+
+  <dialog id="password-dialog" aria-labelledby="password-title">
+    <form method="dialog" id="password-form">
+      <h2 id="password-title">Agent password</h2>
+      <p class="muted">Running the agent uses paid API credit, so it needs the password. It's remembered in this browser after the first run.</p>
+      <p id="password-error" class="password-error" hidden></p>
+      <label for="password-input">Password</label>
+      <input id="password-input" type="password" autocomplete="current-password" required>
+      <div class="dialog-actions">
+        <button type="button" id="password-cancel" class="btn-secondary">Cancel</button>
+        <button type="submit" class="btn-primary">Run refresh</button>
+      </div>
+    </form>
+  </dialog>
 
   <template id="card-template">
     <article class="card">

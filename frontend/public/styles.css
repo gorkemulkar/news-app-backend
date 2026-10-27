@@ -147,6 +147,32 @@ h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
 .legend li .score { min-width: 48px; text-align: center; }
 .legend li.rubric-note { color: var(--text-muted); font-style: italic; }
 
+.link-button {
+  font: inherit; font-size: 0.8rem; color: var(--text-muted); background: none; border: 0; padding: 0;
+  text-decoration: underline; cursor: pointer;
+}
+.link-button[hidden] { display: none; }
+.btn-secondary {
+  font: inherit; font-weight: 600; font-size: 0.95rem; padding: 9px 18px; border-radius: 8px; cursor: pointer;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+}
+
+#password-dialog {
+  width: min(420px, calc(100vw - 32px)); padding: 22px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); color: var(--text); box-shadow: 0 12px 40px rgba(16, 24, 40, 0.25);
+}
+#password-dialog::backdrop { background: rgba(10, 14, 20, 0.45); }
+#password-dialog h2 { margin: 0 0 6px; font-size: 1.15rem; }
+#password-dialog p { margin: 0 0 14px; font-size: 0.9rem; }
+#password-dialog label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+#password-dialog input {
+  width: 100%; font: inherit; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+}
+.password-error { color: var(--error-fg); background: var(--error-bg); padding: 8px 10px; border-radius: 6px; }
+.password-error[hidden] { display: none; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
 .empty { margin: 40px 0; text-align: center; color: var(--text-muted); }
 .site-footer { margin: 40px auto 32px; font-size: 0.82rem; }
 

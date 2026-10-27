@@ -4,6 +4,7 @@ export interface Env {
   ANTHROPIC_BASE_URL: string;
   ANTHROPIC_MODEL: string;
   YDC_API_KEY: string;
+  AGENT_PASSWORD: string;
   SCHEDULE_TIMEZONE: string;
   SCHEDULE_HOUR: string;
 }
