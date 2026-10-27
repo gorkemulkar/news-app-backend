@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import topicsConfig from "../topics.json";
+import { createClient, responseText } from "./claude";
 import type { Env } from "./types";
 
 type Topic = (typeof topicsConfig.topics)[number];
@@ -86,14 +87,7 @@ export async function runPipeline(env: Env, trigger: "manual" | "scheduled") {
 
 async function executePipeline(env: Env) {
   const started = Date.now();
-  const client = new Anthropic({
-    apiKey: env.ANTHROPIC_API_KEY,
-    baseURL: env.ANTHROPIC_BASE_URL || undefined,
-    // Portkey authenticates with its own header; the gateway ignores x-api-key.
-    defaultHeaders: env.ANTHROPIC_BASE_URL?.includes("portkey")
-      ? { "x-portkey-api-key": env.ANTHROPIC_API_KEY }
-      : undefined,
-  });
+  const client = createClient(env);
 
   const settled = await Promise.allSettled(
     topicsConfig.topics.map((topic) => processTopic(client, env, topic)),
@@ -346,9 +340,7 @@ If fewer than ${ARTICLES_PER_TOPIC} items qualify, return fewer; if none, return
     throw new Error(`Claude declined the request (${response.stop_details?.category ?? "no category"})`);
   }
 
-  // Concatenate every text block before extracting the JSON array.
-  const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
-  return parseSelection(text, candidates);
+  return parseSelection(responseText(response), candidates);
 }
 
 function parseSelection(text: string, candidates: Candidate[]): Article[] {
