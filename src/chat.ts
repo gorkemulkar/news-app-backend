@@ -62,9 +62,33 @@ function rank(articles: ArticleRow[], question: string): ArticleRow[] {
     .map((s) => s.a);
 }
 
+const MAX_HISTORY_MESSAGES = 6;
+const MAX_HISTORY_CHARS = 6000;
+
+// Prior turns as alternating user/assistant messages, oldest first, ending with an assistant reply.
+function parseHistory(raw: unknown): { role: "user" | "assistant"; content: string }[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new BadRequestError("history must be an array of {role, content}");
+  const messages = raw.slice(-MAX_HISTORY_MESSAGES).map((m, i) => {
+    const { role, content } = (m ?? {}) as Record<string, unknown>;
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string" || !content.trim()) {
+      throw new BadRequestError(`history[${i}] must be {role: "user" | "assistant", content: string}`);
+    }
+    return { role, content: content.slice(0, MAX_HISTORY_CHARS) } as { role: "user" | "assistant"; content: string };
+  });
+  // Trimming to the last N can leave a leading assistant turn; the conversation must open with the user.
+  while (messages[0]?.role === "assistant") messages.shift();
+  messages.forEach((m, i) => {
+    if (m.role !== (i % 2 === 0 ? "user" : "assistant")) throw new BadRequestError("history must alternate user and assistant");
+  });
+  if (messages.length % 2 !== 0) throw new BadRequestError("history must end with an assistant message");
+  return messages;
+}
+
 export async function chat(env: Env, body: unknown) {
   if (typeof body !== "object" || body === null) throw new BadRequestError("Send a JSON body: {\"question\": \"...\"}");
-  const { question: rawQuestion, model: rawModel, topic } = body as Record<string, unknown>;
+  const { question: rawQuestion, model: rawModel, topic, history: rawHistory } = body as Record<string, unknown>;
+  const history = parseHistory(rawHistory);
 
   const question = typeof rawQuestion === "string" ? rawQuestion.trim() : "";
   if (!question) throw new BadRequestError("question is required");
@@ -82,7 +106,9 @@ export async function chat(env: Env, body: unknown) {
     .bind(`-${LOOKBACK_DAYS} days`, ...(topic ? [topic] : []))
     .all<ArticleRow>();
 
-  const context = rank(results, question);
+  // Follow-ups like "tell me more about the first one" carry few keywords, so also match on the previous question.
+  const previousQuestion = history.at(-2)?.content ?? "";
+  const context = rank(results, `${question} ${previousQuestion}`);
   const sources = context.map((a, i) => ({
     n: i + 1,
     id: a.id,
@@ -116,8 +142,10 @@ export async function chat(env: Env, body: unknown) {
       "You answer questions for an engineer who builds on-device audio ML and edge AI products, using a news digest. " +
       "Answer only from the numbered articles the user provides, and cite them inline as [1], [2]. " +
       "If the articles don't cover the question, say so plainly instead of drawing on outside knowledge. " +
-      "Be concise and concrete: lead with the answer, then the supporting details.",
+      "Be concise and concrete: lead with the answer, then the supporting details. " +
+      "Earlier turns cited earlier article lists; in your answer, cite only the numbers in the current list.",
     messages: [
+      ...history,
       {
         role: "user",
         content: `Today is ${new Date().toISOString().slice(0, 10)}.\n\nArticles:\n\n${articleBlock}\n\nQuestion: ${question}`,

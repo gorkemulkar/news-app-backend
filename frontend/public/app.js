@@ -80,8 +80,9 @@ async function api(path, options) {
   return body;
 }
 
-// Runs the agent with the stored password, asking for it on first use or when it's rejected.
-async function runAgent() {
+// POSTs to a password-protected endpoint, asking for the password on first use or when it's rejected.
+// Resolves with null if the user cancels the password prompt.
+async function authorizedPost(path, payload) {
   let password = currentPassword();
   let error = null;
   for (;;) {
@@ -96,7 +97,13 @@ async function runAgent() {
       syncForgetButton();
     };
     try {
-      const result = await api("/agent", { method: "POST", headers: { Authorization: `Bearer ${password}` } });
+      const headers = { Authorization: `Bearer ${password}` };
+      if (payload !== undefined) headers["Content-Type"] = "application/json";
+      const result = await api(path, {
+        method: "POST",
+        headers,
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+      });
       remember();
       return result;
     } catch (err) {
@@ -273,7 +280,7 @@ async function refresh() {
   el.refreshLabel.textContent = "Running agent…";
   showStatus("Searching the web and asking Claude to pick and summarize articles. This usually takes 15-60 seconds.", "info");
   try {
-    const result = await runAgent();
+    const result = await authorizedPost("/agent");
     if (!result) {
       el.status.hidden = true;
       return;
