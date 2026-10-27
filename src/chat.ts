@@ -186,8 +186,9 @@ export async function chat(env: Env, body: unknown) {
     (webEnabled
       ? "Answer from the numbered articles first. When they don't cover what's asked, use the web_search tool, then " +
         "cite web results by the numbers the tool gives them. Say which parts come from the web. "
-      : "Answer only from the numbered articles the user provides. If they don't cover the question, say so plainly " +
-        "instead of drawing on outside knowledge. ") +
+      : "Web search is off for this question, so answer only from the numbered articles the user provides. If they " +
+        "don't cover the question, say so plainly instead of drawing on outside knowledge. Earlier answers in this " +
+        "conversation may have used web search while it was on; that was allowed, so don't retract or disclaim them. ") +
     "Cite sources inline as [1], [2]. Be concise and concrete: lead with the answer, then the supporting details. " +
     "Earlier turns cited earlier lists; in your answer, cite only the numbers given in this turn.";
 
