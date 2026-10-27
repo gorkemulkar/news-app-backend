@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import topicsConfig from "../topics.json";
 import { createClient, responseText } from "./claude";
 import type { Env } from "./types";
+import { webSearch, type WebResult } from "./websearch";
 
 type Topic = (typeof topicsConfig.topics)[number];
 
@@ -40,7 +41,6 @@ const ARTICLES_PER_TOPIC = 5;
 const MAX_ARTICLES_PER_TOPIC = 20;
 const RESULTS_PER_QUERY = 10;
 const MAX_AGE_DAYS = 7;
-const YDC_SEARCH_URL = "https://ydc-index.io/v1/search";
 const ARXIV_API_URL = "https://export.arxiv.org/api/query";
 const ARXIV_MAX_RESULTS = 150;
 const ARXIV_ABSTRACT_CHARS = 500;
@@ -176,26 +176,11 @@ async function processTopic(client: Anthropic, env: Env, topic: Topic): Promise<
   };
 }
 
-interface YdcResult {
-  url?: string;
-  title?: string;
-  description?: string;
-  snippets?: string[];
-  page_age?: string;
-}
-
 async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
   const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const searches: Promise<YdcResult[]>[] = topic.queries.map(async (query) => {
-    const res = await fetch(YDC_SEARCH_URL, {
-      method: "POST",
-      headers: { "X-API-Key": env.YDC_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ query, count: RESULTS_PER_QUERY, freshness: "week", country: "US" }),
-    });
-    if (!res.ok) throw new Error(`You.com search ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const body = (await res.json()) as { results?: { web?: YdcResult[]; news?: YdcResult[] } };
-    return [...(body.results?.news ?? []), ...(body.results?.web ?? [])];
-  });
+  const searches: Promise<WebResult[]>[] = topic.queries.map((query) =>
+    webSearch(env, query, { count: RESULTS_PER_QUERY, freshness: "week" }),
+  );
   if (topic.arxiv_query) searches.push(searchArxiv(topic.arxiv_query));
   const responses = await Promise.allSettled(searches);
 
@@ -231,7 +216,7 @@ async function searchTopic(env: Env, topic: Topic): Promise<Candidate[]> {
 
 // Newest arXiv submissions matching the query (arXiv search syntax), shaped like search results.
 // Web search rarely surfaces new papers, so research topics read arXiv directly.
-async function searchArxiv(query: string): Promise<YdcResult[]> {
+async function searchArxiv(query: string): Promise<WebResult[]> {
   const params = new URLSearchParams({
     search_query: query,
     sortBy: "submittedDate",

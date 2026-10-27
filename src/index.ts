@@ -22,7 +22,7 @@ const ENDPOINTS = {
   "/agent":
     "Runs the news pipeline now; requires Authorization: Bearer <password>. Also runs daily at 7 AM America/New_York; one manual run per 5 minutes",
   "/chat":
-    'POST {"question": "...", "model": "opus" (default) | "sonnet" | "haiku", "topic": optional}; answers from stored articles; requires Authorization: Bearer <password>',
+    'POST {"question": "...", "model": "opus" (default) | "sonnet" | "haiku", "topic": optional, "web_search": false (default) | true, "history": optional}; answers from stored articles, plus web search (You.com) when enabled; requires Authorization: Bearer <password>',
 };
 
 // Paid endpoints (/agent, /chat) share one password. Fails closed when the secret is unset.
