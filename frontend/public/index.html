@@ -27,6 +27,34 @@
   </header>
 
   <main class="wrap">
+    <section class="chat" aria-labelledby="chat-title">
+      <div class="chat-head">
+        <h2 id="chat-title">Ask about the news</h2>
+        <div class="model-toggle" role="radiogroup" aria-label="Model">
+          <label><input type="radio" name="chat-model" value="haiku"><span>Fast <small>Haiku 5.5</small></span></label>
+          <label><input type="radio" name="chat-model" value="opus" checked><span>Capable <small>Opus 5.5</small></span></label>
+        </div>
+      </div>
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Conversation">
+        <div class="chat-empty" id="chat-empty">
+          <p>Answers come only from the articles stored here, with numbered citations.</p>
+          <div class="suggestions">
+            <button type="button" class="suggestion">Which new edge AI chips matter most for on-device audio?</button>
+            <button type="button" class="suggestion">What recent speech enhancement papers could run on an MCU?</button>
+            <button type="button" class="suggestion">Summarize this week's toolchain and runtime releases</button>
+          </div>
+        </div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <label for="chat-input" class="visually-hidden">Your question</label>
+        <textarea id="chat-input" rows="2" maxlength="2000" placeholder="Ask a question about the articles…" required></textarea>
+        <div class="chat-actions">
+          <button type="button" id="chat-clear" class="link-button" hidden>Clear conversation</button>
+          <button type="submit" id="chat-send" class="btn-primary"><span class="spinner" aria-hidden="true"></span><span class="btn-label">Send</span></button>
+        </div>
+      </form>
+    </section>
+
     <form id="filters" class="filters" aria-label="Filter articles">
       <label>Topic
         <select id="topic" name="topic">
@@ -79,7 +107,7 @@
   <dialog id="password-dialog" aria-labelledby="password-title">
     <form method="dialog" id="password-form">
       <h2 id="password-title">Agent password</h2>
-      <p class="muted">Running the agent uses paid API credit, so it needs the password. It's remembered in this browser after the first run.</p>
+      <p class="muted">Refreshing articles and asking questions use paid API credit, so they need the password. It's remembered in this browser after the first run.</p>
       <p id="password-error" class="password-error" hidden></p>
       <label for="password-input">Password</label>
       <input id="password-input" type="password" autocomplete="current-password" required>
@@ -103,5 +131,6 @@
   </template>
 
   <script src="app.js"></script>
+  <script src="chat.js"></script>
 </body>
 </html>

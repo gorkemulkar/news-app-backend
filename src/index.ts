@@ -1,5 +1,6 @@
 import topicsConfig from "../topics.json";
 import { listArticles } from "./articles";
+import { chat } from "./chat";
 import { runPipeline, SCORE_RUBRIC } from "./pipeline";
 import { BadRequestError, type Env } from "./types";
 
@@ -20,7 +21,19 @@ const ENDPOINTS = {
     "Stored articles; filters: topic, from, to (YYYY-MM-DD), source, min_score (1-10), limit; sort: published (default), added, score",
   "/agent":
     "Runs the news pipeline now; requires Authorization: Bearer <password>. Also runs daily at 7 AM America/New_York; one manual run per 5 minutes",
+  "/chat":
+    'POST {"question": "...", "model": "opus" (default) | "sonnet" | "haiku", "topic": optional}; answers from stored articles; requires Authorization: Bearer <password>',
 };
+
+// Paid endpoints (/agent, /chat) share one password. Fails closed when the secret is unset.
+async function requirePassword(request: Request, env: Env): Promise<Response | null> {
+  if (!env.AGENT_PASSWORD) return json({ error: "The agent password is not configured" }, 503);
+  if (await isAuthorized(request, env)) return null;
+  return Response.json(
+    { error: "Unauthorized: send the agent password as 'Authorization: Bearer <password>'" },
+    { status: 401, headers: { ...CORS_HEADERS, "WWW-Authenticate": 'Bearer realm="news-agent"' } },
+  );
+}
 
 const encoder = new TextEncoder();
 
@@ -76,19 +89,22 @@ export default {
             score_rubric: SCORE_RUBRIC,
           });
         case "/agent": {
-          // Fail closed: without a configured password nobody can trigger a paid run.
-          if (!env.AGENT_PASSWORD) return json({ error: "The agent password is not configured" }, 503);
-          if (!(await isAuthorized(request, env))) {
-            return Response.json(
-              { error: "Unauthorized: send the agent password as 'Authorization: Bearer <password>'" },
-              { status: 401, headers: { ...CORS_HEADERS, "WWW-Authenticate": 'Bearer realm="news-agent"' } },
-            );
-          }
+          const denied = await requirePassword(request, env);
+          if (denied) return denied;
           const wait = await secondsUntilNextManualRun(env);
           if (wait > 0) {
             return json({ error: `The agent ran recently; try again in ${wait} seconds`, retry_after_seconds: wait }, 429);
           }
           return json(await runPipeline(env, "manual"));
+        }
+        case "/chat": {
+          if (request.method !== "POST") return json({ error: "Use POST with a JSON body" }, 405);
+          const denied = await requirePassword(request, env);
+          if (denied) return denied;
+          const body = await request.json().catch(() => {
+            throw new BadRequestError("Body must be valid JSON");
+          });
+          return json(await chat(env, body));
         }
         case "/articles":
           return json(await listArticles(env, searchParams));
