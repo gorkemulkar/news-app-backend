@@ -89,14 +89,21 @@ async function runAgent() {
       password = await askForPassword(error);
       if (!password) return null;
     }
-    try {
-      const result = await api("/agent", { method: "POST", headers: { Authorization: `Bearer ${password}` } });
+    // Any answer other than 401 (success, cooldown, server error) means the password was accepted.
+    const remember = () => {
       sessionPassword = password;
       savedPassword.set(password);
       syncForgetButton();
+    };
+    try {
+      const result = await api("/agent", { method: "POST", headers: { Authorization: `Bearer ${password}` } });
+      remember();
       return result;
     } catch (err) {
-      if (err.status !== 401) throw err;
+      if (err.status !== 401) {
+        if (err.status) remember();
+        throw err;
+      }
       sessionPassword = null;
       savedPassword.clear();
       syncForgetButton();
