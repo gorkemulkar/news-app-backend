@@ -15,7 +15,59 @@ const el = {
   refresh: document.getElementById("refresh"),
   refreshLabel: document.querySelector("#refresh .btn-label"),
   cardTemplate: document.getElementById("card-template"),
+  passwordDialog: document.getElementById("password-dialog"),
+  passwordForm: document.getElementById("password-form"),
+  passwordInput: document.getElementById("password-input"),
+  passwordError: document.getElementById("password-error"),
+  passwordCancel: document.getElementById("password-cancel"),
+  forgetPassword: document.getElementById("forget-password"),
 };
+
+// The agent password lives only in this browser (never in the page source); storage may be unavailable.
+const PASSWORD_KEY = "news-agent-password";
+const savedPassword = {
+  get() { try { return localStorage.getItem(PASSWORD_KEY); } catch { return null; } },
+  set(v) { try { localStorage.setItem(PASSWORD_KEY, v); } catch {} },
+  clear() { try { localStorage.removeItem(PASSWORD_KEY); } catch {} },
+};
+let sessionPassword = null;
+
+function currentPassword() {
+  return sessionPassword ?? savedPassword.get();
+}
+
+function syncForgetButton() {
+  el.forgetPassword.hidden = !savedPassword.get();
+}
+
+// Resolves with the entered password, or null if the user cancels.
+function askForPassword(errorMessage) {
+  el.passwordError.textContent = errorMessage || "";
+  el.passwordError.hidden = !errorMessage;
+  el.passwordInput.value = "";
+  el.passwordDialog.showModal();
+  el.passwordInput.focus();
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      el.passwordForm.removeEventListener("submit", onSubmit);
+      el.passwordCancel.removeEventListener("click", onCancel);
+      el.passwordDialog.removeEventListener("cancel", onCancel);
+      el.passwordDialog.close();
+      resolve(value);
+    };
+    const onSubmit = (e) => {
+      e.preventDefault();
+      finish(el.passwordInput.value.trim() || null);
+    };
+    const onCancel = (e) => {
+      e.preventDefault();
+      finish(null);
+    };
+    el.passwordForm.addEventListener("submit", onSubmit);
+    el.passwordCancel.addEventListener("click", onCancel);
+    el.passwordDialog.addEventListener("cancel", onCancel);
+  });
+}
 
 let topics = [];
 // Filter changes can overlap; only the latest request may render, so a slow older response can't overwrite it.
@@ -24,8 +76,41 @@ let latestLoad = 0;
 async function api(path, options) {
   const res = await fetch(API_BASE + path, options);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `Request failed (HTTP ${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(body.error || `Request failed (HTTP ${res.status})`), { status: res.status });
   return body;
+}
+
+// Runs the agent with the stored password, asking for it on first use or when it's rejected.
+async function runAgent() {
+  let password = currentPassword();
+  let error = null;
+  for (;;) {
+    if (!password) {
+      password = await askForPassword(error);
+      if (!password) return null;
+    }
+    // Any answer other than 401 (success, cooldown, server error) means the password was accepted.
+    const remember = () => {
+      sessionPassword = password;
+      savedPassword.set(password);
+      syncForgetButton();
+    };
+    try {
+      const result = await api("/agent", { method: "POST", headers: { Authorization: `Bearer ${password}` } });
+      remember();
+      return result;
+    } catch (err) {
+      if (err.status !== 401) {
+        if (err.status) remember();
+        throw err;
+      }
+      sessionPassword = null;
+      savedPassword.clear();
+      syncForgetButton();
+      password = null;
+      error = "That password was not accepted. Try again.";
+    }
+  }
 }
 
 function showStatus(message, kind = "ok") {
@@ -178,12 +263,21 @@ async function loadArticles() {
 }
 
 async function refresh() {
+  if (!currentPassword()) {
+    const password = await askForPassword();
+    if (!password) return;
+    sessionPassword = password;
+  }
   el.refresh.disabled = true;
   el.refresh.classList.add("loading");
   el.refreshLabel.textContent = "Running agent…";
   showStatus("Searching the web and asking Claude to pick and summarize articles. This usually takes 15-60 seconds.", "info");
   try {
-    const result = await api("/agent", { method: "POST" });
+    const result = await runAgent();
+    if (!result) {
+      el.status.hidden = true;
+      return;
+    }
     const failed = result.topics.filter((t) => t.error);
     const added = result.articles_inserted;
     showStatus(
@@ -227,6 +321,13 @@ async function init() {
   el.filters.addEventListener("change", loadArticles);
   el.filters.addEventListener("submit", (e) => e.preventDefault());
   el.refresh.addEventListener("click", refresh);
+  el.forgetPassword.addEventListener("click", () => {
+    sessionPassword = null;
+    savedPassword.clear();
+    syncForgetButton();
+    showStatus("Saved password removed from this browser.", "info");
+  });
+  syncForgetButton();
 
   try {
     const config = await api("/topics");
