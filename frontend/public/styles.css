@@ -15,6 +15,7 @@
   --score-low-bg: #eceef1;   --score-low-fg: #4a5260;
   --error-bg: #fdecec;       --error-fg: #9b1c1c;
   --ok-bg: #e8f5ee;          --ok-fg: #165c36;
+  --new-bg: #2563eb;         --new-fg: #ffffff;
   color-scheme: light;
 }
 
@@ -36,6 +37,7 @@
     --score-low-bg: #262b33;   --score-low-fg: #b3bac5;
     --error-bg: #3a1717;       --error-fg: #ffb4b4;
     --ok-bg: #12301f;          --ok-fg: #8fe0b0;
+    --new-bg: #3b82f6;         --new-fg: #ffffff;
     color-scheme: dark;
   }
 }
@@ -123,6 +125,27 @@ h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
 .score.good { background: var(--score-good-bg); color: var(--score-good-fg); }
 .score.mid  { background: var(--score-mid-bg);  color: var(--score-mid-fg); }
 .score.low  { background: var(--score-low-bg);  color: var(--score-low-fg); }
+
+.card.is-new { border-left: 4px solid var(--new-bg); padding-left: 15px; }
+.new-badge {
+  display: inline-block; margin-right: 8px; padding: 1px 7px; border-radius: 4px;
+  background: var(--new-bg); color: var(--new-fg);
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 1px;
+}
+.new-badge[hidden] { display: none; }
+.reason { margin: 8px 0 0; font-size: 0.85rem; color: var(--text-muted); }
+.reason strong { color: var(--text); font-weight: 600; }
+
+.legend {
+  margin: 8px 0 0; padding: 10px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px; font-size: 0.9rem;
+}
+.legend summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.legend p { margin: 10px 0; color: var(--text-muted); }
+.legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.legend li { display: flex; gap: 10px; align-items: baseline; }
+.legend li .score { min-width: 48px; text-align: center; }
+.legend li.rubric-note { color: var(--text-muted); font-style: italic; }
 
 .empty { margin: 40px 0; text-align: center; color: var(--text-muted); }
 .site-footer { margin: 40px auto 32px; font-size: 0.82rem; }

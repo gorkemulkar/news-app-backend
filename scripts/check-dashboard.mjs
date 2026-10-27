@@ -14,7 +14,10 @@ const snapshot = () =>
       cards: s.querySelectorAll(".card").length,
     })),
     cards: document.querySelectorAll(".card").length,
-    scores: [...document.querySelectorAll(".score")].map((b) => Number(b.textContent.split("/")[0])),
+    newCards: document.querySelectorAll(".card.is-new").length,
+    reasons: document.querySelectorAll(".card .reason").length,
+    rubricItems: document.querySelectorAll("#rubric-list li").length,
+    scores: [...document.querySelectorAll(".card .score")].map((b) => Number(b.textContent.split("/")[0])),
     count: document.getElementById("result-count").textContent,
     lastRefreshed: document.getElementById("last-refreshed").textContent,
   }));
