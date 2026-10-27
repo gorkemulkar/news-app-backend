@@ -35,6 +35,39 @@
           <label><input type="radio" name="chat-model" value="opus" checked><span>Capable <small>Opus 5.5</small></span></label>
         </div>
       </div>
+      <details class="hood" id="hood">
+        <summary>Under the hood</summary>
+        <div class="hood-body">
+          <label class="switch">
+            <input type="checkbox" id="web-toggle" role="switch">
+            <span class="switch-track" aria-hidden="true"></span>
+            <span class="switch-text">
+              <strong>Web search</strong>
+              <small>When on, Claude can search the web (via You.com) for information the stored articles don't cover, up to 3 searches per answer. Answers get slower and use more tokens.</small>
+            </span>
+          </label>
+          <h3>Per-response details</h3>
+          <p id="hood-empty" class="muted hood-empty">Ask a question to see what each answer used.</p>
+          <div class="hood-table-wrap" hidden id="hood-table-wrap">
+            <table class="hood-table">
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th scope="col">Model</th>
+                  <th scope="col">DB articles</th>
+                  <th scope="col" title="Estimated at about 4 characters per token">Article context (≈ tokens)</th>
+                  <th scope="col">Web searches</th>
+                  <th scope="col">Input tokens</th>
+                  <th scope="col">Output tokens</th>
+                  <th scope="col">Total</th>
+                </tr>
+              </thead>
+              <tbody id="hood-rows"></tbody>
+            </table>
+          </div>
+          <p class="muted hood-note">Input and output tokens are exact counts reported by the API, summed over every model call in an answer (a web search adds a call). Article context is an estimate of how much of the input the database articles took up.</p>
+        </div>
+      </details>
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Conversation">
         <div class="chat-empty" id="chat-empty">
           <p>Answers come only from the articles stored here, with numbered citations.</p>

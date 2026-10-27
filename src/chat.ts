@@ -1,5 +1,40 @@
+import type Anthropic from "@anthropic-ai/sdk";
 import { createClient, responseText } from "./claude";
 import { BadRequestError, type Env } from "./types";
+import { webSearch } from "./websearch";
+
+const MAX_WEB_SEARCHES = 3;
+const MAX_TOOL_ROUNDS = 3;
+const WEB_RESULTS_PER_SEARCH = 6;
+
+const WEB_SEARCH_TOOL: Anthropic.Tool = {
+  name: "web_search",
+  description:
+    "Search the web for information the provided articles don't cover. Returns numbered results (title, URL, date, " +
+    "snippet) that you can cite by number. Use specific queries, and include a year or month when recency matters.",
+  input_schema: {
+    type: "object",
+    properties: { query: { type: "string", description: "The search query" } },
+    required: ["query"],
+    additionalProperties: false,
+  },
+};
+
+interface Source {
+  n: number;
+  kind: "article" | "web";
+  id?: number;
+  topic: string | null;
+  headline: string;
+  source: string | null;
+  published_at: string | null;
+  url: string;
+}
+
+// Rough token estimate (about 4 characters per token for English); labeled as approximate in the UI.
+function estimateTokens(text: string): number {
+  return Math.round(text.length / 4);
+}
 
 // Model preference -> model ID on the configured gateway. An allowlist, so callers can't pick arbitrary models.
 const CHAT_MODELS = {
@@ -87,7 +122,13 @@ function parseHistory(raw: unknown): { role: "user" | "assistant"; content: stri
 
 export async function chat(env: Env, body: unknown) {
   if (typeof body !== "object" || body === null) throw new BadRequestError("Send a JSON body: {\"question\": \"...\"}");
-  const { question: rawQuestion, model: rawModel, topic, history: rawHistory } = body as Record<string, unknown>;
+  const {
+    question: rawQuestion,
+    model: rawModel,
+    topic,
+    history: rawHistory,
+    web_search: rawWeb,
+  } = body as Record<string, unknown>;
   const history = parseHistory(rawHistory);
 
   const question = typeof rawQuestion === "string" ? rawQuestion.trim() : "";
@@ -97,6 +138,8 @@ export async function chat(env: Env, body: unknown) {
   const model = (rawModel ?? DEFAULT_MODEL) as string;
   if (!(model in CHAT_MODELS)) throw new BadRequestError(`model must be one of: ${Object.keys(CHAT_MODELS).join(", ")}`);
   if (topic !== undefined && typeof topic !== "string") throw new BadRequestError("topic must be a string");
+  if (rawWeb !== undefined && typeof rawWeb !== "boolean") throw new BadRequestError("web_search must be true or false");
+  const webEnabled = rawWeb === true;
 
   const { results } = await env.DB.prepare(
     `SELECT id, topic, headline, source, published_at, url, summary, relevance_score, fetched_at
@@ -109,8 +152,9 @@ export async function chat(env: Env, body: unknown) {
   // Follow-ups like "tell me more about the first one" carry few keywords, so also match on the previous question.
   const previousQuestion = history.at(-2)?.content ?? "";
   const context = rank(results, `${question} ${previousQuestion}`);
-  const sources = context.map((a, i) => ({
+  const sources: Source[] = context.map((a, i) => ({
     n: i + 1,
+    kind: "article",
     id: a.id,
     topic: a.topic,
     headline: a.headline,
@@ -119,11 +163,14 @@ export async function chat(env: Env, body: unknown) {
     url: a.url,
   }));
 
-  if (context.length === 0) {
+  if (context.length === 0 && !webEnabled) {
     return {
-      answer: "There are no stored articles from the past 30 days to answer from yet. Run the agent first.",
+      answer: "There are no stored articles from the past 30 days to answer from yet. Run the agent first, or turn on web search.",
       model,
       sources,
+      context: { articles: 0, article_tokens_est: 0 },
+      web: { enabled: false, searches: [], result_tokens_est: 0 },
+      usage: { input_tokens: 0, output_tokens: 0, model_calls: 0 },
     };
   }
 
@@ -134,33 +181,100 @@ export async function chat(env: Env, body: unknown) {
     )
     .join("\n\n");
 
-  const response = await createClient(env).messages.create({
-    model: CHAT_MODELS[model as ChatModel],
-    max_tokens: 4000,
-    output_config: { effort: "medium" },
-    system:
-      "You answer questions for an engineer who builds on-device audio ML and edge AI products, using a news digest. " +
-      "Answer only from the numbered articles the user provides, and cite them inline as [1], [2]. " +
-      "If the articles don't cover the question, say so plainly instead of drawing on outside knowledge. " +
-      "Be concise and concrete: lead with the answer, then the supporting details. " +
-      "Earlier turns cited earlier article lists; in your answer, cite only the numbers in the current list.",
-    messages: [
-      ...history,
-      {
-        role: "user",
-        content: `Today is ${new Date().toISOString().slice(0, 10)}.\n\nArticles:\n\n${articleBlock}\n\nQuestion: ${question}`,
-      },
-    ],
-  });
+  const system =
+    "You answer questions for an engineer who builds on-device audio ML and edge AI products, using a news digest. " +
+    (webEnabled
+      ? "Answer from the numbered articles first. When they don't cover what's asked, use the web_search tool, then " +
+        "cite web results by the numbers the tool gives them. Say which parts come from the web. "
+      : "Web search is off for this question, so answer only from the numbered articles the user provides. If they " +
+        "don't cover the question, say so plainly instead of drawing on outside knowledge. Earlier answers in this " +
+        "conversation may have used web search while it was on; that was allowed, so don't retract or disclaim them. ") +
+    "Cite sources inline as [1], [2]. Be concise and concrete: lead with the answer, then the supporting details. " +
+    "Earlier turns cited earlier lists; in your answer, cite only the numbers given in this turn.";
 
-  if (response.stop_reason === "refusal") {
-    throw new Error(`Claude declined the question (${response.stop_details?.category ?? "no category"})`);
+  const messages: Anthropic.MessageParam[] = [
+    ...history,
+    {
+      role: "user",
+      content: `Today is ${new Date().toISOString().slice(0, 10)}.\n\nArticles:\n\n${articleBlock}\n\nQuestion: ${question}`,
+    },
+  ];
+
+  const client = createClient(env);
+  const usage = { input_tokens: 0, output_tokens: 0, model_calls: 0 };
+  const web = { enabled: webEnabled, searches: [] as { query: string; results: number; error?: string }[], result_tokens_est: 0 };
+  let response: Anthropic.Message;
+
+  // Tool loop: Claude may call web_search (run by the Worker against You.com) before answering.
+  // The last round withholds tools (tool_choice none) so the loop always ends with an answer.
+  for (let round = 0; ; round++) {
+    const toolsAllowed = webEnabled && web.searches.length < MAX_WEB_SEARCHES && round < MAX_TOOL_ROUNDS;
+    response = await client.messages.create({
+      model: CHAT_MODELS[model as ChatModel],
+      max_tokens: 4000,
+      output_config: { effort: "medium" },
+      system,
+      messages,
+      ...(webEnabled && { tools: [WEB_SEARCH_TOOL], tool_choice: { type: toolsAllowed ? "auto" : "none" } as const }),
+    });
+    usage.input_tokens += response.usage.input_tokens;
+    usage.output_tokens += response.usage.output_tokens;
+    usage.model_calls++;
+
+    if (response.stop_reason === "refusal") {
+      throw new Error(`Claude declined the question (${response.stop_details?.category ?? "no category"})`);
+    }
+    if (response.stop_reason !== "tool_use") break;
+
+    // Answer every tool call in this turn (Claude can issue several at once), in one user message.
+    const calls = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+    const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+      calls.map(async (call) => {
+        const query = typeof (call.input as { query?: unknown })?.query === "string" ? (call.input as { query: string }).query.trim() : "";
+        if (!query || web.searches.length >= MAX_WEB_SEARCHES) {
+          const reason = query ? "Search limit reached; answer with what you have." : "Missing query.";
+          return { type: "tool_result", tool_use_id: call.id, content: reason, is_error: true };
+        }
+        const entry: { query: string; results: number; error?: string } = { query, results: 0 };
+        web.searches.push(entry);
+        try {
+          const results = (await webSearch(env, query, { count: WEB_RESULTS_PER_SEARCH }))
+            .filter((r) => r.url && r.title && /^https?:\/\//i.test(r.url))
+            .slice(0, WEB_RESULTS_PER_SEARCH);
+          entry.results = results.length;
+          const lines = results.map((r) => {
+            const n = sources.length + 1;
+            sources.push({
+              n,
+              kind: "web",
+              topic: null,
+              headline: r.title!,
+              source: new URL(r.url!).hostname.replace(/^www\./, ""),
+              published_at: r.page_age?.slice(0, 10) ?? null,
+              url: r.url!,
+            });
+            const snippet = [r.description, ...(r.snippets ?? []).slice(0, 2)].filter(Boolean).join(" ").slice(0, 600);
+            return `[${n}] ${r.title}\nURL: ${r.url} | Date: ${r.page_age?.slice(0, 10) ?? "unknown"}\n${snippet}`;
+          });
+          const text = lines.length ? lines.join("\n\n") : "No results.";
+          web.result_tokens_est += estimateTokens(text);
+          return { type: "tool_result", tool_use_id: call.id, content: text };
+        } catch (err) {
+          entry.error = err instanceof Error ? err.message : String(err);
+          return { type: "tool_result", tool_use_id: call.id, content: `Search failed: ${entry.error}`, is_error: true };
+        }
+      }),
+    );
+    // Pass the assistant turn back unchanged (it may hold thinking blocks), then the results.
+    messages.push({ role: "assistant", content: response.content }, { role: "user", content: toolResults });
   }
 
   return {
     answer: responseText(response).trim(),
     model,
     sources,
-    usage: { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens },
+    context: { articles: context.length, article_tokens_est: estimateTokens(articleBlock) },
+    web,
+    usage,
   };
 }
